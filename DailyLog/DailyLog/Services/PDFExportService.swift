@@ -231,7 +231,6 @@ class PDFExportService {
                     if detailText.isEmpty { detailText = "—" }
 
                     let noteText = log.note ?? ""
-                    let hasPhoto = log.photoData != nil
 
                     // Measure row height
                     let timeH = measureText(timeStr, font: bodyFont, maxWidth: colTime - cellPadH * 2)

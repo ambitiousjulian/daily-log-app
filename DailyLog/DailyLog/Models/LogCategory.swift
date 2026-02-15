@@ -13,7 +13,7 @@ enum LogCategory: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .meal: return "Made Meal"
+        case .meal: return "Meal Time"
         case .bath: return "Bath Time"
         case .bedtime: return "Bedtime"
         case .pickup: return "Pickup/Dropoff"
