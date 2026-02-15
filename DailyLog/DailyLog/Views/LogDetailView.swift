@@ -3,26 +3,40 @@ import PhotosUI
 import Photos
 import ImageIO
 
+/// Holds one photo and its extracted (or manually set) timestamp.
+struct PhotoEntry: Identifiable {
+    let id = UUID()
+    var image: UIImage
+    var timestamp: Date
+    var autoFilled: Bool
+}
+
 struct LogDetailView: View {
     let category: LogCategory
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedField: Field?
 
-    @State private var timestamp = Date()
-    @State private var timestampAutoFilled = false
+    // Shared fields (applied to every entry)
+    @State private var timestamp = Date()          // used only when there are NO photos
     @State private var subcategory = ""
     @State private var note = ""
     @State private var amount = ""
-    @State private var selectedImage: UIImage?
-    @State private var selectedImageData: Data?
-    @State private var photoPickerItem: PhotosPickerItem?
+
+    // Photo state
+    @State private var photoEntries: [PhotoEntry] = []
+    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var showCamera = false
+    @State private var cameraImage: UIImage?
+    @State private var isLoadingPhotos = false
+
     @State private var isSaving = false
 
     private enum Field: Hashable {
         case amount, note, doctor
     }
+
+    private var hasPhotos: Bool { !photoEntries.isEmpty }
 
     var body: some View {
         NavigationStack {
@@ -43,22 +57,10 @@ struct LogDetailView: View {
                     .listRowBackground(Color.clear)
                 }
 
-                // Timestamp
-                Section {
-                    DatePicker("When", selection: $timestamp, displayedComponents: [.date, .hourAndMinute])
-                        .onChange(of: timestamp) { _ in
-                            // If user manually changes, clear the auto-fill label
-                            if timestampAutoFilled {
-                                timestampAutoFilled = false
-                            }
-                        }
-                } header: {
-                    Text("Date & Time")
-                } footer: {
-                    if timestampAutoFilled {
-                        Label("Auto-filled from photo", systemImage: "camera.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.blue)
+                // Timestamp — only shown when there are no photos
+                if !hasPhotos {
+                    Section("Date & Time") {
+                        DatePicker("When", selection: $timestamp, displayedComponents: [.date, .hourAndMinute])
                     }
                 }
 
@@ -99,37 +101,81 @@ struct LogDetailView: View {
                         .focused($focusedField, equals: .note)
                 }
 
-                // Photo section
-                Section("Photo") {
-                    if let image = selectedImage {
+                // Photos section
+                Section {
+                    if isLoadingPhotos {
                         HStack {
                             Spacer()
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxHeight: 200)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                            ProgressView("Loading photos…")
                             Spacer()
-                        }
-
-                        Button("Remove Photo", role: .destructive) {
-                            selectedImage = nil
-                            photoPickerItem = nil
                         }
                     }
 
+                    // Show each selected photo with its timestamp
+                    ForEach($photoEntries) { $entry in
+                        VStack(spacing: 8) {
+                            Image(uiImage: entry.image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 160)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                            DatePicker(
+                                "Taken",
+                                selection: $entry.timestamp,
+                                displayedComponents: [.date, .hourAndMinute]
+                            )
+                            .font(.caption)
+
+                            if entry.autoFilled {
+                                Label("From photo metadata", systemImage: "camera.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .onDelete { indexSet in
+                        photoEntries.remove(atOffsets: indexSet)
+                    }
+
+                    // Add photos buttons
                     PhotosPicker(
-                        selection: $photoPickerItem,
+                        selection: $photoPickerItems,
+                        maxSelectionCount: 20,
                         matching: .images,
                         photoLibrary: .shared()
                     ) {
-                        Label("Choose from Library", systemImage: "photo.on.rectangle")
+                        Label(hasPhotos ? "Add More from Library" : "Choose from Library",
+                              systemImage: "photo.on.rectangle.angled")
                     }
 
                     Button {
                         showCamera = true
                     } label: {
                         Label("Take Photo", systemImage: "camera")
+                    }
+
+                    if hasPhotos {
+                        Button("Remove All Photos", role: .destructive) {
+                            photoEntries.removeAll()
+                            photoPickerItems.removeAll()
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Photos")
+                        if hasPhotos {
+                            Spacer()
+                            Text("\(photoEntries.count) photo\(photoEntries.count == 1 ? "" : "s")")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } footer: {
+                    if hasPhotos {
+                        Text("Each photo creates a separate log entry with its own timestamp. Swipe left to remove individual photos.")
+                            .font(.caption2)
                     }
                 }
             }
@@ -143,11 +189,11 @@ struct LogDetailView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(hasPhotos ? "Save \(photoEntries.count)" : "Save") {
                         saveLog()
                     }
                     .fontWeight(.bold)
-                    .disabled(isSaving)
+                    .disabled(isSaving || isLoadingPhotos)
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -157,43 +203,64 @@ struct LogDetailView: View {
                     .fontWeight(.semibold)
                 }
             }
-            .onChange(of: photoPickerItem) { newItem in
+            .onChange(of: photoPickerItems) { newItems in
+                guard !newItems.isEmpty else { return }
                 Task {
-                    guard let item = newItem else { return }
-
-                    // Load the image data
-                    if let data = try? await item.loadTransferable(type: Data.self),
-                       let uiImage = UIImage(data: data) {
-                        selectedImage = uiImage
-                        selectedImageData = data
-
-                        // Try to get date from PHAsset (most reliable for library photos)
-                        if let assetId = item.itemIdentifier {
-                            let result = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
-                            if let asset = result.firstObject, let creationDate = asset.creationDate {
-                                timestamp = creationDate
-                                timestampAutoFilled = true
-                                return
-                            }
-                        }
-
-                        // Fallback: extract EXIF date from image data
-                        if let exifDate = Self.extractEXIFDate(from: data) {
-                            timestamp = exifDate
-                            timestampAutoFilled = true
-                        }
-                    }
+                    await loadPickerItems(newItems)
+                    // Reset picker so the user can pick again later
+                    photoPickerItems = []
                 }
             }
             .sheet(isPresented: $showCamera) {
-                CameraView(image: $selectedImage)
+                CameraView(image: $cameraImage)
+            }
+            .onChange(of: cameraImage) { newImage in
+                if let image = newImage {
+                    let entry = PhotoEntry(image: image, timestamp: Date(), autoFilled: false)
+                    photoEntries.append(entry)
+                    cameraImage = nil
+                }
+            }
+        }
+    }
+
+    // MARK: - Load Photos from Picker
+
+    private func loadPickerItems(_ items: [PhotosPickerItem]) async {
+        isLoadingPhotos = true
+        defer { isLoadingPhotos = false }
+
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let uiImage = UIImage(data: data) else { continue }
+
+            var photoDate: Date = Date()
+            var wasAutoFilled = false
+
+            // Try PHAsset first (most reliable for library photos)
+            if let assetId = item.itemIdentifier {
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                if let asset = result.firstObject, let creationDate = asset.creationDate {
+                    photoDate = creationDate
+                    wasAutoFilled = true
+                }
+            }
+
+            // Fallback: EXIF
+            if !wasAutoFilled, let exifDate = Self.extractEXIFDate(from: data) {
+                photoDate = exifDate
+                wasAutoFilled = true
+            }
+
+            let entry = PhotoEntry(image: uiImage, timestamp: photoDate, autoFilled: wasAutoFilled)
+            await MainActor.run {
+                photoEntries.append(entry)
             }
         }
     }
 
     // MARK: - EXIF Date Extraction
 
-    /// Extracts the original capture date from JPEG/HEIC EXIF metadata.
     static func extractEXIFDate(from data: Data) -> Date? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -207,28 +274,46 @@ struct LogDetailView: View {
         return formatter.date(from: dateString)
     }
 
+    // MARK: - Save
+
     private func saveLog() {
         isSaving = true
         focusedField = nil
 
         let haptic = UINotificationFeedbackGenerator()
 
-        let log = ParentingLog(context: viewContext)
-        log.id = UUID()
-        log.timestamp = timestamp
-        log.category = category.rawValue
-        log.note = note.isEmpty ? nil : note
+        if hasPhotos {
+            // Create one log entry per photo
+            for entry in photoEntries {
+                let log = ParentingLog(context: viewContext)
+                log.id = UUID()
+                log.timestamp = entry.timestamp
+                log.category = category.rawValue
+                log.note = note.isEmpty ? nil : note
 
-        if !subcategory.isEmpty {
-            log.subcategory = subcategory
-        }
+                if !subcategory.isEmpty {
+                    log.subcategory = subcategory
+                }
+                if category == .purchase, let amountValue = Decimal(string: amount) {
+                    log.amount = amountValue as NSDecimalNumber
+                }
 
-        if category == .purchase, let amountValue = Decimal(string: amount) {
-            log.amount = amountValue as NSDecimalNumber
-        }
+                log.photoData = ImageCompressor.compress(entry.image)
+            }
+        } else {
+            // Single entry with no photo
+            let log = ParentingLog(context: viewContext)
+            log.id = UUID()
+            log.timestamp = timestamp
+            log.category = category.rawValue
+            log.note = note.isEmpty ? nil : note
 
-        if let image = selectedImage {
-            log.photoData = ImageCompressor.compress(image)
+            if !subcategory.isEmpty {
+                log.subcategory = subcategory
+            }
+            if category == .purchase, let amountValue = Decimal(string: amount) {
+                log.amount = amountValue as NSDecimalNumber
+            }
         }
 
         do {
