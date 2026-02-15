@@ -210,6 +210,14 @@ class PDFExportService {
                     guard let ts = log.timestamp else { continue }
                     let cat = LogCategory(rawValue: log.category ?? "") ?? .activity
                     let timeStr = timeFormatter.string(from: ts)
+                    let hasNote = log.note != nil && !(log.note?.isEmpty ?? true)
+                    let hasPhoto = log.photoData != nil
+
+                    // Estimate height needed
+                    let neededHeight: CGFloat = 14
+                        + (hasNote ? 12 : 0)
+                        + (hasPhoto ? 54 : 0)
+                    checkPageBreak(needed: neededHeight)
 
                     // Build cell texts
                     let activityText = "\(cat.emoji) \(cat.displayName)"
