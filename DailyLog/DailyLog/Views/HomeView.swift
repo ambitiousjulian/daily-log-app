@@ -4,6 +4,7 @@ import CoreData
 struct HomeView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @State private var selectedCategory: LogCategory?
+    @State private var showSavedBanner = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 16),
@@ -12,27 +13,51 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Category buttons grid
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(LogCategory.allCases) { category in
-                            CategoryButton(category: category) {
-                                selectedCategory = category
+            ZStack(alignment: .top) {
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // Category buttons grid
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(LogCategory.allCases) { category in
+                                CategoryButton(category: category) {
+                                    let impact = UIImpactFeedbackGenerator(style: .medium)
+                                    impact.impactOccurred()
+                                    selectedCategory = category
+                                }
                             }
                         }
-                    }
-                    .padding(.horizontal)
-
-                    // Stats card
-                    StatsCard()
                         .padding(.horizontal)
+
+                        // Stats card
+                        StatsCard()
+                            .padding(.horizontal)
+                    }
+                    .padding(.vertical)
                 }
-                .padding(.vertical)
+
+                // Save confirmation banner
+                if showSavedBanner {
+                    SavedBanner()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(1)
+                }
             }
             .navigationTitle("DailyLog")
-            .sheet(item: $selectedCategory) { category in
+            .sheet(item: $selectedCategory, onDismiss: {
+                showSavedConfirmation()
+            }) { category in
                 LogDetailView(category: category)
+            }
+        }
+    }
+
+    private func showSavedConfirmation() {
+        withAnimation(.spring(response: 0.4)) {
+            showSavedBanner = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeOut(duration: 0.3)) {
+                showSavedBanner = false
             }
         }
     }
@@ -99,7 +124,7 @@ struct StatsCard: View {
             Text("Activity Stats")
                 .font(.headline)
 
-            HStack(spacing: 24) {
+            HStack(spacing: 20) {
                 StatItem(
                     value: "\(last30DaysLogs.count)",
                     label: "Last 30 Days"
@@ -109,6 +134,13 @@ struct StatsCard: View {
                     value: "\(thisWeekLogs.count)",
                     label: "This Week"
                 )
+
+                if streak > 0 {
+                    StatItem(
+                        value: "\(streak)d",
+                        label: "Streak"
+                    )
+                }
 
                 if let topCategory = mostFrequentCategory {
                     StatItem(
@@ -134,6 +166,31 @@ struct StatsCard: View {
         guard let topRaw = counts.max(by: { $0.value < $1.value })?.key else { return nil }
         return LogCategory(rawValue: topRaw)
     }
+
+    /// Consecutive days (ending today or yesterday) with at least one log.
+    private var streak: Int {
+        let calendar = Calendar.current
+        var daysWithLogs = Set<Date>()
+        for log in last30DaysLogs {
+            guard let ts = log.timestamp else { continue }
+            daysWithLogs.insert(calendar.startOfDay(for: ts))
+        }
+
+        var count = 0
+        var checkDate = calendar.startOfDay(for: Date())
+
+        // Allow starting from yesterday if nothing logged today yet
+        if !daysWithLogs.contains(checkDate) {
+            checkDate = calendar.date(byAdding: .day, value: -1, to: checkDate)!
+        }
+
+        while daysWithLogs.contains(checkDate) {
+            count += 1
+            checkDate = calendar.date(byAdding: .day, value: -1, to: checkDate)!
+        }
+
+        return count
+    }
 }
 
 struct StatItem: View {
@@ -149,5 +206,25 @@ struct StatItem: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+// MARK: - Saved Banner
+
+struct SavedBanner: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text("Activity Logged")
+                .font(.subheadline)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .clipShape(Capsule())
+        .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+        .padding(.top, 8)
     }
 }
