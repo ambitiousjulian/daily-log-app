@@ -5,6 +5,7 @@ struct LogDetailView: View {
     let category: LogCategory
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var focusedField: Field?
 
     @State private var timestamp = Date()
     @State private var subcategory = ""
@@ -14,6 +15,10 @@ struct LogDetailView: View {
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var showCamera = false
     @State private var isSaving = false
+
+    private enum Field: Hashable {
+        case amount, note, doctor
+    }
 
     var body: some View {
         NavigationStack {
@@ -57,6 +62,7 @@ struct LogDetailView: View {
                             Text("$")
                             TextField("0.00", text: $amount)
                                 .keyboardType(.decimalPad)
+                                .focused($focusedField, equals: .amount)
                         }
                     }
                 }
@@ -64,6 +70,7 @@ struct LogDetailView: View {
                 if category == .doctor {
                     Section("Doctor") {
                         TextField("Doctor name (optional)", text: $subcategory)
+                            .focused($focusedField, equals: .doctor)
                     }
                 }
 
@@ -71,6 +78,7 @@ struct LogDetailView: View {
                 Section("Notes") {
                     TextField("Add notes (optional)", text: $note, axis: .vertical)
                         .lineLimit(3...6)
+                        .focused($focusedField, equals: .note)
                 }
 
                 // Photo section
@@ -107,6 +115,7 @@ struct LogDetailView: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Log Activity")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -121,6 +130,13 @@ struct LogDetailView: View {
                     }
                     .fontWeight(.bold)
                     .disabled(isSaving)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
+                    .fontWeight(.semibold)
                 }
             }
             .onChange(of: photoPickerItem) { newItem in
@@ -139,6 +155,9 @@ struct LogDetailView: View {
 
     private func saveLog() {
         isSaving = true
+        focusedField = nil
+
+        let haptic = UINotificationFeedbackGenerator()
 
         let log = ParentingLog(context: viewContext)
         log.id = UUID()
@@ -160,8 +179,10 @@ struct LogDetailView: View {
 
         do {
             try viewContext.save()
+            haptic.notificationOccurred(.success)
             dismiss()
         } catch {
+            haptic.notificationOccurred(.error)
             print("Save error: \(error)")
             isSaving = false
         }
