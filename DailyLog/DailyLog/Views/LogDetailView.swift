@@ -1,5 +1,7 @@
 import SwiftUI
 import PhotosUI
+import Photos
+import ImageIO
 
 struct LogDetailView: View {
     let category: LogCategory
@@ -8,10 +10,12 @@ struct LogDetailView: View {
     @FocusState private var focusedField: Field?
 
     @State private var timestamp = Date()
+    @State private var timestampAutoFilled = false
     @State private var subcategory = ""
     @State private var note = ""
     @State private var amount = ""
     @State private var selectedImage: UIImage?
+    @State private var selectedImageData: Data?
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var showCamera = false
     @State private var isSaving = false
@@ -40,8 +44,22 @@ struct LogDetailView: View {
                 }
 
                 // Timestamp
-                Section("Date & Time") {
+                Section {
                     DatePicker("When", selection: $timestamp, displayedComponents: [.date, .hourAndMinute])
+                        .onChange(of: timestamp) { _ in
+                            // If user manually changes, clear the auto-fill label
+                            if timestampAutoFilled {
+                                timestampAutoFilled = false
+                            }
+                        }
+                } header: {
+                    Text("Date & Time")
+                } footer: {
+                    if timestampAutoFilled {
+                        Label("Auto-filled from photo", systemImage: "camera.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.blue)
+                    }
                 }
 
                 // Conditional fields
@@ -141,9 +159,29 @@ struct LogDetailView: View {
             }
             .onChange(of: photoPickerItem) { newItem in
                 Task {
-                    if let data = try? await newItem?.loadTransferable(type: Data.self),
+                    guard let item = newItem else { return }
+
+                    // Load the image data
+                    if let data = try? await item.loadTransferable(type: Data.self),
                        let uiImage = UIImage(data: data) {
                         selectedImage = uiImage
+                        selectedImageData = data
+
+                        // Try to get date from PHAsset (most reliable for library photos)
+                        if let assetId = item.itemIdentifier {
+                            let result = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                            if let asset = result.firstObject, let creationDate = asset.creationDate {
+                                timestamp = creationDate
+                                timestampAutoFilled = true
+                                return
+                            }
+                        }
+
+                        // Fallback: extract EXIF date from image data
+                        if let exifDate = Self.extractEXIFDate(from: data) {
+                            timestamp = exifDate
+                            timestampAutoFilled = true
+                        }
                     }
                 }
             }
@@ -151,6 +189,22 @@ struct LogDetailView: View {
                 CameraView(image: $selectedImage)
             }
         }
+    }
+
+    // MARK: - EXIF Date Extraction
+
+    /// Extracts the original capture date from JPEG/HEIC EXIF metadata.
+    static func extractEXIFDate(from data: Data) -> Date? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
+              let dateString = exif[kCGImagePropertyExifDateTimeOriginal] as? String
+        else { return nil }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.date(from: dateString)
     }
 
     private func saveLog() {
