@@ -210,6 +210,49 @@ struct LogDetailView: View {
                     cameraImage = nil
                 }
             }
+            .overlay {
+                if isSaving {
+                    ZStack {
+                        Color.black.opacity(0.3)
+                            .ignoresSafeArea()
+
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                                .tint(.white)
+                            Text(hasPhotos ? "Saving \(photoEntries.count) \(photoEntries.count == 1 ? "entry" : "entries")..." : "Saving...")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(32)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Section Header / Footer
+
+    @ViewBuilder
+    private var photosHeader: some View {
+        HStack {
+            Text("Photos")
+            if hasPhotos {
+                Spacer()
+                Text("\(photoEntries.count) photo\(photoEntries.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var photosFooter: some View {
+        if hasPhotos {
+            Text("Each photo creates a separate log entry with its own timestamp. Swipe left to remove individual photos.")
+                .font(.caption2)
         }
     }
 

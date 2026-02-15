@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var showDeleteConfirmation = false
     @State private var showShareSheet = false
     @State private var pdfData: Data?
+    @State private var isExporting = false
 
     var body: some View {
         NavigationStack {
@@ -41,7 +42,7 @@ struct SettingsView: View {
                     } label: {
                         Label("Export All to PDF", systemImage: "doc.richtext")
                     }
-                    .disabled(allLogs.isEmpty)
+                    .disabled(allLogs.isEmpty || isExporting)
                 }
 
                 Section("Data") {
@@ -82,14 +83,44 @@ struct SettingsView: View {
                     ShareSheet(activityItems: [data])
                 }
             }
+            .overlay {
+                if isExporting {
+                    ZStack {
+                        Color.black.opacity(0.3)
+                            .ignoresSafeArea()
+
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                                .tint(.white)
+                            Text("Generating PDF...")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(32)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+            }
         }
     }
 
     private func exportAllPDF() {
+        isExporting = true
         let logs = Array(allLogs).sorted {
             ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast)
         }
-        pdfData = PDFExportService.generatePDF(logs: logs, context: viewContext)
-        showShareSheet = true
+        let context = viewContext
+
+        Task.detached(priority: .userInitiated) {
+            let data = PDFExportService.generatePDF(logs: logs, context: context)
+
+            await MainActor.run {
+                pdfData = data
+                isExporting = false
+                showShareSheet = true
+            }
+        }
     }
 }

@@ -14,6 +14,7 @@ struct TimelineView: View {
     @State private var selectedFilter: String = "All"
     @State private var showShareSheet = false
     @State private var pdfData: Data?
+    @State private var isExporting = false
 
     private var filterOptions: [String] {
         var options = ["All"]
@@ -134,12 +135,32 @@ struct TimelineView: View {
                     } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
-                    .disabled(filteredLogs.isEmpty)
+                    .disabled(filteredLogs.isEmpty || isExporting)
                 }
             }
             .sheet(isPresented: $showShareSheet) {
                 if let data = pdfData {
                     ShareSheet(activityItems: [data])
+                }
+            }
+            .overlay {
+                if isExporting {
+                    ZStack {
+                        Color.black.opacity(0.3)
+                            .ignoresSafeArea()
+
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                                .tint(.white)
+                            Text("Generating PDF...")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(32)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
                 }
             }
         }
@@ -153,9 +174,19 @@ struct TimelineView: View {
     }
 
     private func exportPDF() {
+        isExporting = true
         let logs = Array(filteredLogs)
-        pdfData = PDFExportService.generatePDF(logs: logs, context: viewContext)
-        showShareSheet = true
+        let context = viewContext
+
+        Task.detached(priority: .userInitiated) {
+            let data = PDFExportService.generatePDF(logs: logs, context: context)
+
+            await MainActor.run {
+                pdfData = data
+                isExporting = false
+                showShareSheet = true
+            }
+        }
     }
 }
 
