@@ -3,20 +3,29 @@ import PhotosUI
 import Photos
 import ImageIO
 
+/// Holds one photo and its extracted (or manually set) timestamp.
+struct PhotoEntry: Identifiable {
+    let id = UUID()
+    var image: UIImage
+    var timestamp: Date
+    var autoFilled: Bool
+}
+
 struct LogDetailView: View {
     let category: LogCategory
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedField: Field?
 
-    @State private var timestamp = Date()
-    @State private var timestampAutoFilled = false
+    // Shared fields (applied to every entry)
+    @State private var timestamp = Date()          // used only when there are NO photos
     @State private var subcategory = ""
     @State private var note = ""
     @State private var amount = ""
-    @State private var selectedImage: UIImage?
-    @State private var selectedImageData: Data?
-    @State private var photoPickerItem: PhotosPickerItem?
+
+    // Photo state
+    @State private var photoEntries: [PhotoEntry] = []
+    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @State private var cameraImage: UIImage?
     @State private var isLoadingPhotos = false
@@ -48,22 +57,10 @@ struct LogDetailView: View {
                     .listRowBackground(Color.clear)
                 }
 
-                // Timestamp
-                Section {
-                    DatePicker("When", selection: $timestamp, displayedComponents: [.date, .hourAndMinute])
-                        .onChange(of: timestamp) { _ in
-                            // If user manually changes, clear the auto-fill label
-                            if timestampAutoFilled {
-                                timestampAutoFilled = false
-                            }
-                        }
-                } header: {
-                    Text("Date & Time")
-                } footer: {
-                    if timestampAutoFilled {
-                        Label("Auto-filled from photo", systemImage: "camera.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.blue)
+                // Timestamp — only shown when there are no photos
+                if !hasPhotos {
+                    Section("Date & Time") {
+                        DatePicker("When", selection: $timestamp, displayedComponents: [.date, .hourAndMinute])
                     }
                 }
 
@@ -166,20 +163,9 @@ struct LogDetailView: View {
                         }
                     }
                 } header: {
-                    HStack {
-                        Text("Photos")
-                        if hasPhotos {
-                            Spacer()
-                            Text("\(photoEntries.count) photo\(photoEntries.count == 1 ? "" : "s")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    photosHeader
                 } footer: {
-                    if hasPhotos {
-                        Text("Each photo creates a separate log entry with its own timestamp. Swipe left to remove individual photos.")
-                            .font(.caption2)
-                    }
+                    photosFooter
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -209,30 +195,9 @@ struct LogDetailView: View {
             .onChange(of: photoPickerItems) { newItems in
                 guard !newItems.isEmpty else { return }
                 Task {
-                    guard let item = newItem else { return }
-
-                    // Load the image data
-                    if let data = try? await item.loadTransferable(type: Data.self),
-                       let uiImage = UIImage(data: data) {
-                        selectedImage = uiImage
-                        selectedImageData = data
-
-                        // Try to get date from PHAsset (most reliable for library photos)
-                        if let assetId = item.itemIdentifier {
-                            let result = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
-                            if let asset = result.firstObject, let creationDate = asset.creationDate {
-                                timestamp = creationDate
-                                timestampAutoFilled = true
-                                return
-                            }
-                        }
-
-                        // Fallback: extract EXIF date from image data
-                        if let exifDate = Self.extractEXIFDate(from: data) {
-                            timestamp = exifDate
-                            timestampAutoFilled = true
-                        }
-                    }
+                    await loadPickerItems(newItems)
+                    // Reset picker so the user can pick again later
+                    photoPickerItems = []
                 }
             }
             .sheet(isPresented: $showCamera) {
@@ -245,6 +210,29 @@ struct LogDetailView: View {
                     cameraImage = nil
                 }
             }
+        }
+    }
+
+    // MARK: - Section Header / Footer
+
+    @ViewBuilder
+    private var photosHeader: some View {
+        HStack {
+            Text("Photos")
+            if hasPhotos {
+                Spacer()
+                Text("\(photoEntries.count) photo\(photoEntries.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var photosFooter: some View {
+        if hasPhotos {
+            Text("Each photo creates a separate log entry with its own timestamp. Swipe left to remove individual photos.")
+                .font(.caption2)
         }
     }
 
@@ -285,7 +273,6 @@ struct LogDetailView: View {
 
     // MARK: - EXIF Date Extraction
 
-    /// Extracts the original capture date from JPEG/HEIC EXIF metadata.
     static func extractEXIFDate(from data: Data) -> Date? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -298,6 +285,8 @@ struct LogDetailView: View {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter.date(from: dateString)
     }
+
+    // MARK: - Save
 
     private func saveLog() {
         isSaving = true
